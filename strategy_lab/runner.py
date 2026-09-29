@@ -158,12 +158,14 @@ def run_file(
     *,
     as_of: date | None = None,
     pool: list[str] | None = None,
-    limit: int = 20,
-) -> None:
+) -> dict:
     """直接运行策略文件，打印选股结果到控制台。
 
     供策略文件 ``if __name__ == "__main__"`` 调用:
         python strategy_lab/strategies/volume_ma_breakout.py
+
+    返回选股结果 dict (含 rows / total 等)，供调用方做后处理 (如查询实时行情)。
+    打印全部选中的股票。
     """
     import importlib.util
 
@@ -179,11 +181,9 @@ def run_file(
     print(f"策略: {result['strategy_name']} ({result['strategy_id']})")
     print(f"日期: {result['as_of']}  |  选出: {result['total']} 只  |  耗时: {result['elapsed_ms']}ms")
     print(f"{'=' * 90}")
-    rows = result["rows"][:limit]
-    print(_format_table(rows))
-    if result["total"] > limit:
-        print(f"\n  ... 还有 {result['total'] - limit} 条未显示 (--limit 调整)")
+    print(_format_table(result["rows"]))
     print()
+    return result
 
 
 def run_all(

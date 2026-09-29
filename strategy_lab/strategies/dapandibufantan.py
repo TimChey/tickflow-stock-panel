@@ -1,23 +1,26 @@
-"""底部恐慌下跌 - 放量大盘股恐慌性下跌 + 底部特征
+"""大盘底部反弹 - 放量大市值股恐慌下跌后处于底部区域, 博弈反弹
 
 策略逻辑:
-  1. 近10个交易日，日平均成交额 > 2.5亿
-  2. 近10个交易日，每日成交额都 > 2亿
-  3. 近10个交易日，至少有一天跌幅 > 5% (恐慌性下跌)
-  4. 近10日最低价接近20日最低价 (底部特征，差距 ≤ 5%)
+  1. 近10个交易日, 日平均成交额 > 2.5亿
+  2. 近10个交易日, 每日成交额都 > 2亿
+  3. 近10个交易日, 至少有一天跌幅 > 5% (恐慌性下跌)
+  4. 近10日最低价接近20日最低价 (底部特征, 差距 ≤ 5%)
   5. 流通市值 > 100亿 (在 BASIC_FILTER 中检查)
 
 执行后端: python_history_legacy (需要历史窗口)
+
+运行方式:
+  python strategy_lab/run.py dapandibufantan.py
 """
 from __future__ import annotations
 
 import polars as pl
 
 META = {
-    "id": "lab_panic_bottom_reversal",
-    "name": "底部恐慌下跌",
-    "description": "近10日放量 + 恐慌性大跌 + 股价处于底部区域 + 流通市值>100亿",
-    "tags": ["恐慌", "超跌", "底部", "放量", "大市值"],
+    "id": "lab_dapandibufantan",
+    "name": "大盘底部反弹",
+    "description": "近10日放量 + 恐慌性大跌 + 股价处于20日底部区域 + 流通市值>100亿, 博弈超跌反弹",
+    "tags": ["底部", "超跌", "反弹", "放量", "大市值"],
     "asset_types": ["stock"],
     "timeframes": ["1d"],
     "params": [
@@ -68,6 +71,9 @@ EXECUTION_BACKEND = "python_history_legacy"
 
 LOOKBACK_DAYS = 20
 
+# change_pct 为引擎计算列, 需显式声明 (symbol/date/OHLCV/amount 为基础列)
+REQUIRED_FEATURES = {"change_pct"}
+
 BASIC_FILTER = {
     "price_min": 3,
     "price_max": 500,
@@ -85,19 +91,19 @@ ALERTS = []
 
 
 def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
-    """历史窗口过滤: 返回满足条件的股票 (含所有历史行，引擎再按 as_of 裁剪)。
+    """历史窗口过滤: 返回满足条件的股票 (含所有历史行, 引擎再按 as_of 裁剪)。
 
-    条件 1-4 在此检查；条件 5 (流通市值) 由 BASIC_FILTER 在 as_of 日检查。
+    条件 1-4 在此检查; 条件 5 (流通市值) 由 BASIC_FILTER 在 as_of 日检查。
     """
     df = df.sort(["symbol", "date"])
 
-    # 从参数提取阈值 (用户输入为百分比/亿元，转为小数/元)
+    # 从参数提取阈值 (用户输入为亿元/百分比, 转为元/小数)
     avg_amt_min = float(params.get("avg_amount_min", 2.5)) * 1e8
     daily_amt_min = float(params.get("daily_amount_min", 2.0)) * 1e8
     panic_drop_min = float(params.get("panic_drop_min", 5.0)) / 100.0
     bottom_threshold = float(params.get("bottom_threshold", 5.0)) / 100.0
 
-    # 按 symbol 分组，取近 N 个交易日的统计量
+    # 按 symbol 分组, 取近 N 个交易日的统计量
     stats = (
         df.group_by("symbol", maintain_order=True)
         .agg(
@@ -105,19 +111,20 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
             pl.col("amount").tail(10).mean().alias("_avg_amount_10d"),
             # 条件 2: 近10日最小成交额 (每日都达标 = 最小值达标)
             pl.col("amount").tail(10).min().alias("_min_amount_10d"),
-            # 条件 3: 近10日最小涨幅 (跌幅最大的一天，至少有一天恐慌性大跌)
+            # 条件 3: 近10日最小涨幅 (跌幅最大的一天, 至少有一天恐慌性大跌)
             pl.col("change_pct").tail(10).min().alias("_min_change_10d"),
             # 条件 4: 近10日最低价 vs 近20日最低价 (底部特征)
             pl.col("low").tail(10).min().alias("_low_10d"),
             pl.col("low").tail(20).min().alias("_low_20d"),
-            # 评分用: 恐慌日跌幅 (取负值，跌得越多得分越高)
+            # 评分用: 恐慌日跌幅 (取负值, 跌得越多得分越高)
             pl.col("change_pct").tail(10).min().alias("_panic_drop_neg"),
             # 数据完整性: 确保有足够交易日
             pl.col("date").count().alias("_day_count"),
         )
         .with_columns(
             # 底部偏离度 = (近10日最低价 - 近20日最低价) / 近20日最低价
-            # 偏离度越小 (越接近0)，说明股价越接近20日最低点
+            # 近10日窗口包含于近20日窗口内, low_10d >= low_20d 恒成立,
+            # 与原 |Low10 - Low20| / Low20 口径等价; 偏离度越小越接近底部
             ((pl.col("_low_10d") - pl.col("_low_20d")) / pl.col("_low_20d")).alias("_bottom_deviation"),
         )
         .filter(
